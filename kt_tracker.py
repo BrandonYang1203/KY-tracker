@@ -42,7 +42,7 @@ UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
 
 # ---------------------------------------------------------------- 抓取與解析
 
-def fetch(url=URL, timeout=30):
+def fetch(url=URL, timeout=120):
     req = urllib.request.Request(url, headers={
         "User-Agent": UA,
         "Accept-Language": "zh-TW,zh;q=0.9",
@@ -532,15 +532,27 @@ def build_report(me=None, target_rank=10, out="report.html"):
 # ---------------------------------------------------------------- 指令
 
 def cmd_snap(args):
-    try:
-        raw = fetch()
-    except Exception as e:
-        print(f"抓取失敗：{e}")
-        return 1
+    soft = getattr(args, "soft_fail", False)
+    attempts = 4
+    raw = None
+    for i in range(1, attempts + 1):
+        try:
+            raw = fetch()
+            break
+        except Exception as e:
+            print(f"第 {i} 次抓取失敗：{e}")
+            if i < attempts:
+                wait = 15 * i
+                print(f"  {wait} 秒後重試")
+                time.sleep(wait)
+    if raw is None:
+        print("連續失敗，這一輪跳過。下次排程會再試。")
+        return 0 if soft else 1
+
     entries = extract_entries(raw)
     if len(entries) < 50:
         print(f"只解析到 {len(entries)} 筆，網站版面可能改了，這次不存。")
-        return 1
+        return 0 if soft else 1
     ts = save_snapshot(entries)
     total = sum(v for _, _, v in entries)
     print(f"[{ts}] {len(entries)} 件，總票數 {total}")
@@ -678,6 +690,8 @@ def main():
     p = sub.add_parser("snap", help="抓一次快照")
     common(p)
     p.add_argument("--then-report", action="store_true")
+    p.add_argument("--soft-fail", action="store_true",
+                   help="抓不到時不視為錯誤（排程用）")
 
     p = sub.add_parser("report", help="產生 HTML 報表")
     common(p)
