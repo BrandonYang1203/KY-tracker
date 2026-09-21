@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Hello Kitty x 台灣感性攝影展 — 票數追蹤器
-
 用法：
     python3 kt_tracker.py snap                 # 抓一次快照存進 votes.db
     python3 kt_tracker.py report --me 079      # 產生 report.html
