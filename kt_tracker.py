@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
+
 用法：
     python3 kt_tracker.py snap                 # 抓一次快照存進 votes.db
     python3 kt_tracker.py report --me 079      # 產生 report.html
@@ -282,7 +283,16 @@ def build_report(me=None, target_rank=10, out="report.html"):
 
     t24, s24, r24 = past(24)
     t01, s01, r01 = past(1)
+    t03, s03, _ = past(3)
+    t06, s06, _ = past(6)
+    t12, s12, _ = past(12)
     t72, s72, _ = past(72)
+
+    def actual_age(t):
+        """該快照實際距今幾小時，用來提醒欄位標題和真實間隔的落差。"""
+        if not t:
+            return None
+        return (now_dt - datetime.fromisoformat(t)).total_seconds() / 3600
 
     def gain(no, snap):
         if not snap or no not in snap:
@@ -351,7 +361,10 @@ def build_report(me=None, target_rank=10, out="report.html"):
     table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
     th,td{padding:7px 8px;text-align:right;border-bottom:1px solid var(--line)}
     th{font-size:12px;color:var(--muted);font-weight:500;white-space:nowrap}
-    td.name,th.name{text-align:left;font-variant-numeric:normal}
+    .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -2px}
+    .scroll table{min-width:620px}
+    td.name,th.name{text-align:left;font-variant-numeric:normal;
+      max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     td.no{color:var(--muted);font-size:13px}
     tr.me{background:#fdeef2}
     tr.me td{font-weight:700}
@@ -442,8 +455,10 @@ def build_report(me=None, target_rank=10, out="report.html"):
     # 排行榜
     show = max(target_rank + 10, 25)
     P.append(f"<h2>排行榜 前 {show} 名</h2>")
-    P.append("<table><thead><tr><th>#</th><th>24h</th><th class='name'>作品</th>"
-             "<th>編號</th><th>票數</th><th>+1h</th><th>+24h</th></tr></thead><tbody>")
+    P.append("<div class='scroll'><table><thead><tr><th>#</th><th>24h</th>"
+             "<th class='name'>作品</th><th>編號</th><th>票數</th>"
+             "<th>+1h</th><th>+3h</th><th>+6h</th><th>+12h</th><th>+24h</th>"
+             "</tr></thead><tbody>")
     for i, (no, (name, v)) in enumerate(cur_items[:show], start=1):
         cls = []
         if no == me:
@@ -451,11 +466,19 @@ def build_report(me=None, target_rank=10, out="report.html"):
         if i == target_rank:
             cls.append("cut")
         c = f" class='{' '.join(cls)}'" if cls else ""
+        cells = "".join(f"<td>{fmt_gain(gain(no, s))}</td>"
+                        for s in (s01, s03, s06, s12, s24))
         P.append(f"<tr{c}><td>{i}</td><td>{arrow(rankmove(no, r24))}</td>"
                  f"<td class='name'>{html.escape(name)}</td><td class='no'>{no}</td>"
-                 f"<td>{v}</td><td>{fmt_gain(gain(no, s01))}</td>"
-                 f"<td>{fmt_gain(gain(no, s24))}</td></tr>")
-    P.append("</tbody></table>")
+                 f"<td>{v}</td>{cells}</tr>")
+    P.append("</tbody></table></div>")
+
+    ages = [(lab, actual_age(t)) for lab, t in
+            (("+1h", t01), ("+3h", t03), ("+6h", t06), ("+12h", t12), ("+24h", t24))]
+    off = [f"{lab} 實際是 {a:.1f} 小時" for lab, a in ages
+           if a is not None and abs(a - float(lab[1:-1])) > 0.5]
+    if off:
+        P.append("<p class='note'>快照間隔不平均，" + "、".join(off) + "。</p>")
     if target_rank and len(cur_items) > target_rank:
         P.append(f"<p class='note'>虛線是第 {target_rank} 名的位置。</p>")
 
