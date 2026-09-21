@@ -2,8 +2,8 @@ name: 票數追蹤
 
 on:
   schedule:
-    # UTC 時間。每 30 分鐘一次。GitHub 的排程常有 5–20 分鐘延遲，正常現象。
-    - cron: "*/30 * * * *"
+    # UTC 時間。每 60 分鐘一次。GitHub 的排程常有 5–20 分鐘延遲，正常現象。
+    - cron: "*/60 * * * *"
   workflow_dispatch:        # 也可以在 Actions 頁面手動按一下
 
 permissions:
