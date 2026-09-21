@@ -1,0 +1,44 @@
+name: 票數追蹤
+
+on:
+  schedule:
+    # UTC 時間。每 30 分鐘一次。GitHub 的排程常有 5–20 分鐘延遲，正常現象。
+    - cron: "*/30 * * * *"
+  workflow_dispatch:        # 也可以在 Actions 頁面手動按一下
+
+permissions:
+  contents: write
+
+concurrency:
+  group: vote-tracker
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 還原歷史資料
+        run: python kt_tracker.py ingest --dir data
+
+      - name: 抓一次快照
+        run: python kt_tracker.py snap
+
+      - name: 記錄變動
+        run: python kt_tracker.py emit --dir data
+
+      - name: 產生報表
+        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --out docs/index.html
+
+      - name: 存回 repo
+        run: |
+          git config user.name "vote-tracker"
+          git config user.email "actions@github.com"
+          git add data docs
+          git diff --staged --quiet || git commit -m "snapshot $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          git push
