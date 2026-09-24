@@ -363,6 +363,10 @@ def build_report(me=None, target_rank=10, out="report.html"):
     th{font-size:12px;color:var(--muted);font-weight:500;white-space:nowrap}
     .scroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:0 -2px}
     .scroll table{min-width:620px}
+    .daily th,.daily td{padding:6px 7px}
+    .daily .name{position:sticky;left:0;z-index:1;background:var(--paper);
+      max-width:9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .daily tr.me .name{background:#fdeef2}
     td.name,th.name{text-align:left;font-variant-numeric:normal;
       max-width:210px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
     td.no{color:var(--muted);font-size:13px}
@@ -481,6 +485,56 @@ def build_report(me=None, target_rank=10, out="report.html"):
         P.append("<p class='note'>快照間隔不平均，" + "、".join(off) + "。</p>")
     if target_rank and len(cur_items) > target_rank:
         P.append(f"<p class='note'>虛線是第 {target_rank} 名的位置。</p>")
+
+    # 每日新增票數
+    last_of_day = {}
+    for t in times:
+        last_of_day[datetime.fromisoformat(t).date()] = t   # times 已排序，留下每天最後一筆
+    if last_of_day:
+        d0, d1 = min(last_of_day), max(last_of_day)
+        cal = [d0 + timedelta(days=i) for i in range((d1 - d0).days + 1)]
+        top = [no for no, _ in cur_items[:show]]
+        prev = snapshot_at(conn, times[0])          # 第一天以第一筆快照為起點
+        cols, gap = [], False
+        for d in cal:
+            if d not in last_of_day:
+                cols.append(None)                   # 那天完全沒有快照
+                gap = True
+                continue
+            snap = snapshot_at(conn, last_of_day[d])
+            cols.append({no: snap.get(no, ("", 0))[1] - prev.get(no, ("", 0))[1]
+                         for no in top})
+            prev = snap
+
+        vmax = max((c[no] for c in cols if c for no in top), default=0)
+
+        def heat(g):
+            if g is None:
+                return "<td class='flat'>—</td>"
+            if g <= 0 or vmax <= 0:
+                return f"<td class='flat'>{g}</td>"
+            a = 0.08 + 0.5 * g / vmax
+            return f"<td style='background:rgba(210,31,75,{a:.2f})'>{g}</td>"
+
+        P.append(f"<h2>每日新增票數 前 {show} 名</h2>")
+        head = "".join(f"<th>{d.month}/{d.day}</th>" for d in cal)
+        P.append("<div class='scroll'><table class='daily'><thead><tr><th>#</th>"
+                 f"<th class='name'>作品</th><th>編號</th><th>總票數</th>{head}"
+                 "</tr></thead><tbody>")
+        for i, no in enumerate(top, start=1):
+            name, v = cur[no]
+            c = " class='me'" if no == me else ""
+            cells = "".join(heat(col[no] if col else None) for col in cols)
+            P.append(f"<tr{c}><td>{i}</td><td class='name'>{html.escape(name)}</td>"
+                     f"<td class='no'>{no}</td><td>{v}</td>{cells}</tr>")
+        P.append("</tbody></table></div>")
+
+        first_t = datetime.fromisoformat(times[0]).strftime("%H:%M")
+        notes = [f"{d0.month}/{d0.day} 從 {first_t} 開始記錄，只算那之後的增票；"
+                 f"最後一欄是今天到目前為止。顏色愈深代表當天票數愈多。"]
+        if gap:
+            notes.append("標「—」的日子沒有任何快照，那幾天的票會算進下一個有資料的日子。")
+        P.append("<p class='note'>" + "<br>".join(notes) + "</p>")
 
     # 衝最快
     if s24:
