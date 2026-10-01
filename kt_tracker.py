@@ -2,6 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 
+
 用法：
     python3 kt_tracker.py snap                 # 抓一次快照存進 votes.db
     python3 kt_tracker.py report --me 079      # 產生 report.html
@@ -216,6 +217,61 @@ def line_chart(series, width=760, height=230, color=None, invert=False,
     return "".join(parts)
 
 
+RIVAL_COLORS = ["#3a6ea8", "#2f8f6b", "#c7851d", "#7a4fa3", "#5f6b7a"]
+
+
+def multi_line_chart(series_list, width=760, height=260, zero=False, label=""):
+    """series_list: [(標籤, 顏色, [(datetime, 值)], 是否為自己)]"""
+    pts = [p for _, _, s, _ in series_list for p in s]
+    if len({p[0] for p in pts}) < 2:
+        return '<p class="empty">這段時間的快照還不夠畫圖。</p>'
+    pad_l, pad_r, pad_t, pad_b = 52, 14, 14, 26
+    W, H = width - pad_l - pad_r, height - pad_t - pad_b
+    xs = [p[0].timestamp() for p in pts]
+    ys = [p[1] for p in pts] + ([0] if zero else [])
+    x0, x1 = min(xs), max(xs)
+    lo, hi, ticks = _nice(min(ys), max(ys))
+
+    def px(x):
+        return pad_l + (x - x0) / (x1 - x0 or 1) * W
+
+    def py(y):
+        return pad_t + (1 - (y - lo) / (hi - lo or 1)) * H
+
+    parts = [f'<svg viewBox="0 0 {width} {height}" class="chart" role="img" '
+             f'aria-label="{html.escape(label)}">']
+    for t in ticks:
+        y = py(t)
+        strong = zero and abs(t) < 1e-9
+        parts.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{width-pad_r}" y2="{y:.1f}" '
+                     f'stroke="{PALETTE["ink"] if strong else PALETTE["line"]}" '
+                     f'stroke-width="{1.2 if strong else 1}"/>')
+        parts.append(f'<text x="{pad_l-8}" y="{y+4:.1f}" text-anchor="end" '
+                     f'class="ax">{int(t)}</text>')
+    # 自己畫在最上層
+    for _, color, s, is_me in sorted(series_list, key=lambda x: x[3]):
+        if not s:
+            continue
+        d = " ".join(("M" if i == 0 else "L") + f"{px(t.timestamp()):.1f},{py(v):.1f}"
+                     for i, (t, v) in enumerate(s))
+        parts.append(f'<path d="{d}" fill="none" stroke="{color}" '
+                     f'stroke-width="{2.8 if is_me else 1.8}" stroke-linejoin="round"/>')
+        lt, lv = s[-1]
+        parts.append(f'<circle cx="{px(lt.timestamp()):.1f}" cy="{py(lv):.1f}" '
+                     f'r="{4 if is_me else 3}" fill="{color}"/>')
+    t_first = min(p[0] for p in pts)
+    t_last = max(p[0] for p in pts)
+    parts.append(f'<text x="{pad_l}" y="{height-6}" class="ax">'
+                 f'{t_first.strftime("%m/%d %H:%M")}</text>')
+    parts.append(f'<text x="{width-pad_r}" y="{height-6}" text-anchor="end" class="ax">'
+                 f'{t_last.strftime("%m/%d %H:%M")}</text>')
+    parts.append("</svg>")
+    legend = "".join(
+        f"<span class='lg{' me' if is_me else ''}'><i style='background:{c}'></i>"
+        f"{html.escape(lab)}</span>" for lab, c, _, is_me in series_list)
+    return "".join(parts) + f"<div class='legend'>{legend}</div>"
+
+
 def bar_chart(labels, values, width=760, height=200, color=None, unit=""):
     color = color or PALETTE["accent2"]
     if not values or max(values) == 0:
@@ -262,7 +318,7 @@ def fmt_gain(g):
     return f'<span class="gain">+{g}</span>' if g > 0 else '<span class="flat">0</span>'
 
 
-def build_report(me=None, target_rank=10, out="report.html"):
+def build_report(me=None, target_rank=10, out="report.html", rivals=None, window=48):
     conn = db()
     times = all_times(conn)
     if not times:
@@ -381,6 +437,10 @@ def build_report(me=None, target_rank=10, out="report.html"):
     .ax{font-size:10px;fill:var(--muted);font-family:inherit}
     .empty{color:var(--muted);font-size:13px;padding:14px 0}
     .grid{display:grid;gap:26px}
+    .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;margin:2px 0 4px}
+    .legend .lg{display:inline-flex;align-items:center;gap:6px;color:var(--ink)}
+    .legend .lg.me{font-weight:700}
+    .legend i{display:inline-block;width:14px;height:3px;border-radius:2px}
     @media(max-width:620px){.stats{gap:18px 26px}.stat .v{font-size:24px}
       th,td{padding:6px 5px;font-size:13px}}
     """
@@ -455,6 +515,78 @@ def build_report(me=None, target_rank=10, out="report.html"):
         P.append(line_chart(my_rank_series, color=PALETTE["accent2"], invert=True,
                             label="我的名次"))
         P.append("<p class='note'>名次（愈上面愈好）</p>")
+
+    # 近身戰：你與前後名
+    if me and me in cur:
+        rk = cur_rank[me]
+        if rivals:
+            rv = [r for r in rivals if r in cur and r != me]
+            mode = "指定對手"
+        else:
+            rv = [cur_items[i][0] for i in (rk - 2, rk) if 0 <= i < len(cur_items)]
+            mode = "目前的前一名與後一名"
+        if rv:
+            cutoff = (now_dt - timedelta(hours=window)).isoformat()
+            wtimes = [t for t in times if t >= cutoff]
+            ids = [me] + rv
+            hist = {no: [] for no in ids}
+            for t in wtimes:
+                s = snapshot_at(conn, t)
+                d = datetime.fromisoformat(t)
+                for no in ids:
+                    if no in s:
+                        hist[no].append((d, s[no][1]))
+
+            ordered = sorted(ids, key=lambda n: cur_rank[n])
+            color = {me: PALETTE["accent"]}
+            for i, n in enumerate([n for n in ordered if n != me]):
+                color[n] = RIVAL_COLORS[i % len(RIVAL_COLORS)]
+
+            def lab(n):
+                who = "你" if n == me else html.escape(cur[n][0])
+                return f"第{cur_rank[n]}名 {who} #{n}（{cur[n][1]}）"
+
+            P.append(f"<h2>近身戰：{mode}</h2>")
+            P.append(multi_line_chart(
+                [(lab(n), color[n], hist[n], n == me) for n in ordered],
+                label="與對手的票數"))
+            P.append(f"<p class='note'>最近 {window} 小時的票數。線交叉的地方就是換位的時刻。</p>")
+
+            my_at = dict(hist[me])
+            gaps = []
+            for n in ordered:
+                if n == me:
+                    continue
+                g = [(t, v - my_at[t]) for t, v in hist[n] if t in my_at]
+                gaps.append((lab(n), color[n], g, False))
+            gaps.append(("你（基準線）", PALETTE["accent"],
+                         [(t, 0) for t, _ in hist[me]], True))
+            P.append(multi_line_chart(gaps, zero=True, label="與對手的差距"))
+            P.append("<p class='note'>對手比你多幾票。在黑線上方是領先你，下方是落後你；"
+                     "線往黑線靠近代表差距在縮小。</p>")
+
+            lines = []
+            age = actual_age(t03)
+            for n in ordered:
+                if n == me:
+                    continue
+                gap_now = cur[n][1] - cur[me][1]
+                who = f"#{n}「{html.escape(cur[n][0])}」"
+                pos = (f"領先你 {gap_now} 票" if gap_now > 0 else
+                       f"落後你 {-gap_now} 票" if gap_now < 0 else "跟你同票")
+                trend = ""
+                if s03 and n in s03 and me in s03:
+                    chg = gap_now - (s03[n][1] - s03[me][1])
+                    span = f"近 {age:.1f} 小時" if age else "近 3 小時"
+                    if chg > 0:
+                        trend = f"，{span}對方比你多拿 {chg} 票"
+                    elif chg < 0:
+                        trend = f"，{span}你比對方多拿 {-chg} 票"
+                    else:
+                        trend = f"，{span}雙方拿到的票一樣多"
+                lines.append(who + pos + trend + "。")
+            if lines:
+                P.append("<p class='note'>" + "<br>".join(lines) + "</p>")
 
     # 排行榜
     show = max(target_rank + 10, 25)
@@ -639,8 +771,18 @@ def cmd_snap(args):
     return 0
 
 
+def parse_rivals(text):
+    out = []
+    for part in (text or "").replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            out.append(part.zfill(3))
+    return out or None
+
+
 def cmd_report(args):
-    build_report(me=args.me, target_rank=args.target, out=args.out)
+    build_report(me=args.me, target_rank=args.target, out=args.out,
+                     rivals=parse_rivals(args.rivals), window=args.window)
     return 0
 
 
@@ -649,7 +791,8 @@ def cmd_loop(args):
     while True:
         try:
             cmd_snap(args)
-            build_report(me=args.me, target_rank=args.target, out=args.out)
+            build_report(me=args.me, target_rank=args.target, out=args.out,
+                     rivals=parse_rivals(args.rivals), window=args.window)
         except KeyboardInterrupt:
             print("\n停止。")
             return 0
@@ -761,6 +904,10 @@ def main():
         p.add_argument("--me", help="你的作品編號，三位數如 079")
         p.add_argument("--target", type=int, default=10, help="想擠進的名次，預設 10")
         p.add_argument("--out", default="report.html")
+        p.add_argument("--rivals", default="",
+                       help="指定對手編號，逗號分隔如 009,011；留空則自動取前後名")
+        p.add_argument("--window", type=int, default=48,
+                       help="近身戰圖表要看最近幾小時，預設 48")
 
     p = sub.add_parser("snap", help="抓一次快照")
     common(p)
