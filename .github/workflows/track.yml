@@ -1,11 +1,11 @@
 name: 票數追蹤
 
 on:
-  schedule:
-    # UTC 時間。每半小時一次（23 分、53 分），避開整點壅塞。
-    - cron: "23 * * * *"
-    - cron: "53 * * * *"
-  workflow_dispatch:        # 也可以在 Actions 頁面手動按一下
+  # 活動已於 10/1 00:00 結束，排程已移除，只保留手動執行。
+  # schedule:
+  #   - cron: "23 * * * *"
+  #   - cron: "53 * * * *"
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -27,20 +27,20 @@ jobs:
       - name: 還原歷史資料
         run: python kt_tracker.py ingest --dir data
 
-      - name: 抓一次快照
-        timeout-minutes: 10
-        run: python kt_tracker.py snap --soft-fail
+      # 活動結束，不再抓取新資料
+      # - name: 抓一次快照
+      #   timeout-minutes: 10
+      #   run: python kt_tracker.py snap --soft-fail
+      # - name: 記錄變動
+      #   run: python kt_tracker.py emit --dir data
 
-      - name: 記錄變動
-        run: python kt_tracker.py emit --dir data
-
-      - name: 產生報表
-        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --rivals "${{ vars.RIVALS }}" --out docs/index.html
+      - name: 產生定格報表
+        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --rivals "${{ vars.RIVALS }}" --until "2026-10-01 01:00" --out docs/index.html
 
       - name: 存回 repo
         run: |
           git config user.name "vote-tracker"
           git config user.email "actions@github.com"
           git add data docs
-          git diff --staged --quiet || git commit -m "snapshot $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
+          git diff --staged --quiet || git commit -m "final report $(TZ=Asia/Taipei date '+%Y-%m-%d %H:%M')"
           git push
