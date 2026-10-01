@@ -2,8 +2,7 @@ name: 票數追蹤
 
 on:
   schedule:
-    # UTC 時間。每 60 分鐘一次。GitHub 的排程常有 5–20 分鐘延遲，正常現象。
-    #- cron: "0 * * * *"
+    # UTC 時間。每半小時一次（23 分、53 分），避開整點壅塞。
     - cron: "23 * * * *"
     - cron: "53 * * * *"
   workflow_dispatch:        # 也可以在 Actions 頁面手動按一下
@@ -36,7 +35,7 @@ jobs:
         run: python kt_tracker.py emit --dir data
 
       - name: 產生報表
-        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --out docs/index.html
+        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --rivals "${{ vars.RIVALS }}" --out docs/index.html
 
       - name: 存回 repo
         run: |
