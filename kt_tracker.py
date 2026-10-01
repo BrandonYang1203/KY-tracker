@@ -24,6 +24,7 @@ import time
 import urllib.request
 import gzip
 import io
+import json
 from datetime import datetime, timedelta, timezone
 
 TZ = timezone(timedelta(hours=8))  # Asia/Taipei
@@ -172,59 +173,54 @@ def _nice(lo, hi):
     return lo2, hi2, ticks
 
 
-def line_chart(series, width=760, height=230, color=None, invert=False,
-               unit="", label=""):
-    """series: [(datetime, value)]，invert=True 用於名次（1 在上）。"""
-    color = color or PALETTE["accent"]
-    if len(series) < 2:
-        return ('<p class="empty">還需要至少兩次快照才畫得出趨勢。'
-                '先讓它跑一段時間。</p>')
-    pad_l, pad_r, pad_t, pad_b = 52, 14, 14, 26
-    W, H = width - pad_l - pad_r, height - pad_t - pad_b
-    xs = [d.timestamp() for d, _ in series]
-    ys = [v for _, v in series]
-    x0, x1 = min(xs), max(xs)
-    lo, hi, ticks = _nice(min(ys), max(ys))
+WEEKDAY = "一二三四五六日"
 
-    def px(x):
-        return pad_l + (x - x0) / (x1 - x0 or 1) * W
 
-    def py(y):
-        f = (y - lo) / (hi - lo or 1)
-        return pad_t + (f * H if invert else (1 - f) * H)
+def _tip_time(d):
+    return f"{d.month}/{d.day}（{WEEKDAY[d.weekday()]}）{d:%H:%M}"
 
-    parts = [f'<svg viewBox="0 0 {width} {height}" class="chart" '
-             f'role="img" aria-label="{html.escape(label)}">']
-    for t in ticks:
-        y = py(t)
-        parts.append(f'<line x1="{pad_l}" y1="{y:.1f}" x2="{width-pad_r}" '
-                     f'y2="{y:.1f}" stroke="{PALETTE["line"]}" stroke-width="1"/>')
-        txt = f"{int(t)}" if abs(t - int(t)) < 1e-9 else f"{t:g}"
-        parts.append(f'<text x="{pad_l-8}" y="{y+4:.1f}" text-anchor="end" '
-                     f'class="ax">{txt}{unit}</text>')
-    d = " ".join(("M" if i == 0 else "L") + f"{px(x):.1f},{py(y):.1f}"
-                 for i, (x, y) in enumerate(zip(xs, ys)))
-    parts.append(f'<path d="{d}" fill="none" stroke="{color}" '
-                 f'stroke-width="2" stroke-linejoin="round"/>')
-    lx, ly = px(xs[-1]), py(ys[-1])
-    parts.append(f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="3.5" fill="{color}"/>')
-    for x, lab in ((x0, series[0][0]), (x1, series[-1][0])):
-        anchor = "start" if x == x0 else "end"
-        parts.append(f'<text x="{px(x):.1f}" y="{height-6}" text-anchor="{anchor}" '
-                     f'class="ax">{lab.strftime("%m/%d %H:%M")}</text>')
-    parts.append("</svg>")
-    return "".join(parts)
+
+def _time_ticks(t0, t1, max_ticks=7):
+    """產生 x 軸刻度：依時間跨度自動選 1/2/3/6/12 小時或以天為間隔。"""
+    span_h = max((t1 - t0) / 3600, 1e-9)
+    step = next((s for s in (1, 2, 3, 6, 12, 24, 48, 72, 168)
+                 if span_h / s <= max_ticks), 336)
+    d = datetime.fromtimestamp(t0, TZ).replace(minute=0, second=0, microsecond=0)
+    if d.timestamp() < t0:
+        d += timedelta(hours=1)
+    while (d.hour != 0) if step >= 24 else (d.hour % step):
+        d += timedelta(hours=1)
+    out, first = [], True
+    while d.timestamp() <= t1:
+        if step >= 24 or d.hour == 0:
+            lab = f"{d.month}/{d.day}"
+        elif first:
+            lab = f"{d.month}/{d.day} {d:%H:%M}"
+        else:
+            lab = f"{d:%H:%M}"
+        out.append((d.timestamp(), lab))
+        first = False
+        d += timedelta(hours=step)
+    if not out:
+        a = datetime.fromtimestamp(t0, TZ)
+        b = datetime.fromtimestamp(t1, TZ)
+        out = [(t0, f"{a.month}/{a.day} {a:%H:%M}"), (t1, f"{b:%H:%M}")]
+    return out
 
 
 RIVAL_COLORS = ["#3a6ea8", "#2f8f6b", "#c7851d", "#7a4fa3", "#5f6b7a"]
+_chart_seq = [0]
 
 
-def multi_line_chart(series_list, width=760, height=260, zero=False, label=""):
-    """series_list: [(標籤, 顏色, [(datetime, 值)], 是否為自己)]"""
+def _ichart(series_list, width=760, height=260, invert=False, zero=False,
+            valfmt=None, label="", legend=True):
+    """互動折線圖。series_list: [(名稱, 顏色, [(datetime, 值)], 是否為自己)]"""
+    valfmt = valfmt or (lambda v: f"{v} 票")
     pts = [p for _, _, s, _ in series_list for p in s]
     if len({p[0] for p in pts}) < 2:
         return '<p class="empty">這段時間的快照還不夠畫圖。</p>'
-    pad_l, pad_r, pad_t, pad_b = 52, 14, 14, 26
+    _chart_seq[0] += 1
+    pad_l, pad_r, pad_t, pad_b = 52, 18, 16, 28
     W, H = width - pad_l - pad_r, height - pad_t - pad_b
     xs = [p[0].timestamp() for p in pts]
     ys = [p[1] for p in pts] + ([0] if zero else [])
@@ -235,10 +231,12 @@ def multi_line_chart(series_list, width=760, height=260, zero=False, label=""):
         return pad_l + (x - x0) / (x1 - x0 or 1) * W
 
     def py(y):
-        return pad_t + (1 - (y - lo) / (hi - lo or 1)) * H
+        f = (y - lo) / (hi - lo or 1)
+        return pad_t + (f * H if invert else (1 - f) * H)
 
     parts = [f'<svg viewBox="0 0 {width} {height}" class="chart" role="img" '
              f'aria-label="{html.escape(label)}">']
+    # y 軸
     for t in ticks:
         y = py(t)
         strong = zero and abs(t) < 1e-9
@@ -247,28 +245,135 @@ def multi_line_chart(series_list, width=760, height=260, zero=False, label=""):
                      f'stroke-width="{1.2 if strong else 1}"/>')
         parts.append(f'<text x="{pad_l-8}" y="{y+4:.1f}" text-anchor="end" '
                      f'class="ax">{int(t)}</text>')
-    # 自己畫在最上層
-    for _, color, s, is_me in sorted(series_list, key=lambda x: x[3]):
+    # x 軸
+    for tx, lab in _time_ticks(x0, x1):
+        x = px(tx)
+        parts.append(f'<line x1="{x:.1f}" y1="{pad_t}" x2="{x:.1f}" y2="{pad_t+H}" '
+                     f'stroke="{PALETTE["line"]}" stroke-width="0.6" stroke-dasharray="2 3"/>')
+        lx = min(max(x, pad_l + 22), width - pad_r - 22)
+        parts.append(f'<text x="{lx:.1f}" y="{height-8}" text-anchor="middle" '
+                     f'class="ax">{lab}</text>')
+
+    # 線（自己最後畫，疊在最上面）
+    payload = []
+    order = sorted(range(len(series_list)), key=lambda i: series_list[i][3])
+    parts.append('<g class="lines">')
+    for i in order:
+        name, color, s, is_me = series_list[i]
         if not s:
             continue
-        d = " ".join(("M" if i == 0 else "L") + f"{px(t.timestamp()):.1f},{py(v):.1f}"
-                     for i, (t, v) in enumerate(s))
-        parts.append(f'<path d="{d}" fill="none" stroke="{color}" '
-                     f'stroke-width="{2.8 if is_me else 1.8}" stroke-linejoin="round"/>')
+        d = " ".join(("M" if k == 0 else "L") + f"{px(t.timestamp()):.1f},{py(v):.1f}"
+                     for k, (t, v) in enumerate(s))
+        parts.append(f'<path class="series" data-i="{i}" d="{d}" fill="none" '
+                     f'stroke="{color}" stroke-width="{2.8 if is_me else 1.8}" '
+                     f'stroke-linejoin="round" stroke-linecap="round"/>')
         lt, lv = s[-1]
-        parts.append(f'<circle cx="{px(lt.timestamp()):.1f}" cy="{py(lv):.1f}" '
-                     f'r="{4 if is_me else 3}" fill="{color}"/>')
-    t_first = min(p[0] for p in pts)
-    t_last = max(p[0] for p in pts)
-    parts.append(f'<text x="{pad_l}" y="{height-6}" class="ax">'
-                 f'{t_first.strftime("%m/%d %H:%M")}</text>')
-    parts.append(f'<text x="{width-pad_r}" y="{height-6}" text-anchor="end" class="ax">'
-                 f'{t_last.strftime("%m/%d %H:%M")}</text>')
+        parts.append(f'<circle class="end" data-i="{i}" cx="{px(lt.timestamp()):.1f}" '
+                     f'cy="{py(lv):.1f}" r="{4 if is_me else 3}" fill="{color}"/>')
+    parts.append('</g>')
+    parts.append(f'<line class="guide" x1="0" x2="0" y1="{pad_t}" y2="{pad_t+H}"/>')
+    parts.append('<circle class="hdot" r="5.5" cx="-10" cy="-10"/>')
     parts.append("</svg>")
-    legend = "".join(
-        f"<span class='lg{' me' if is_me else ''}'><i style='background:{c}'></i>"
-        f"{html.escape(lab)}</span>" for lab, c, _, is_me in series_list)
-    return "".join(parts) + f"<div class='legend'>{legend}</div>"
+
+    for name, color, s, _ in series_list:
+        payload.append({
+            "n": name, "c": color,
+            "p": [[round(px(t.timestamp()), 1), round(py(v), 1), _tip_time(t), valfmt(v)]
+                  for t, v in s]})
+    data = json.dumps({"w": width, "h": height, "s": payload}, ensure_ascii=False)
+    data = data.replace("</", "<\\/")
+
+    leg = ""
+    if legend and len(series_list) > 1:
+        leg = "<div class='legend'>" + "".join(
+            f"<span class='lg{' me' if is_me else ''}' data-i='{i}'>"
+            f"<i style='background:{c}'></i>{html.escape(lab)}</span>"
+            for i, (lab, c, _, is_me) in enumerate(series_list)) + "</div>"
+    return (f"<div class='ichart'>{''.join(parts)}<div class='tip'></div>"
+            f"<script type='application/json'>{data}</script>{leg}</div>")
+
+
+def line_chart(series, width=760, height=230, color=None, invert=False,
+               unit="", label="", valfmt=None):
+    if len(series) < 2:
+        return ('<p class="empty">還需要至少兩次快照才畫得出趨勢。'
+                '先讓它跑一段時間。</p>')
+    return _ichart([(label, color or PALETTE["accent"], series, True)],
+                   width=width, height=height, invert=invert, valfmt=valfmt,
+                   label=label, legend=False)
+
+
+def multi_line_chart(series_list, width=760, height=260, zero=False, label="",
+                     valfmt=None):
+    return _ichart(series_list, width=width, height=height, zero=zero,
+                   valfmt=valfmt, label=label)
+
+
+CHART_JS = r"""
+<script>
+(function(){
+document.querySelectorAll('.ichart').forEach(function(box){
+  var data=JSON.parse(box.querySelector('script[type="application/json"]').textContent);
+  var svg=box.querySelector('svg'), tip=box.querySelector('.tip');
+  var guide=svg.querySelector('.guide'), hdot=svg.querySelector('.hdot');
+  var layer=svg.querySelector('.lines'), paths={}, ends={}, cur=-1;
+  svg.querySelectorAll('path.series').forEach(function(p){paths[p.dataset.i]=p;});
+  svg.querySelectorAll('circle.end').forEach(function(c){ends[c.dataset.i]=c;});
+  function hl(si){
+    if(si===cur) return; cur=si;
+    Object.keys(paths).forEach(function(k){
+      var on=(+k===si); paths[k].classList.toggle('hl',on);
+      if(ends[k]) ends[k].classList.toggle('hl',on);
+    });
+    if(si>=0 && paths[si]){ layer.appendChild(paths[si]); if(ends[si]) layer.appendChild(ends[si]); }
+  }
+  function show(si,i){
+    var s=data.s[si], p=s.p[i];
+    box.classList.add('active'); hl(si);
+    guide.setAttribute('x1',p[0]); guide.setAttribute('x2',p[0]);
+    hdot.setAttribute('cx',p[0]); hdot.setAttribute('cy',p[1]); hdot.setAttribute('fill',s.c);
+    tip.innerHTML=(data.s.length>1?'<span class="sw" style="background:'+s.c+'"></span>'+s.n+'<br>':'')
+      +'<span class="tt">'+p[2]+'</span><br><b>'+p[3]+'</b>';
+    var r=svg.getBoundingClientRect(), b=box.getBoundingClientRect();
+    var x=r.left-b.left+p[0]/data.w*r.width, y=r.top-b.top+p[1]/data.h*r.height;
+    var tw=tip.offsetWidth, th=tip.offsetHeight;
+    var left=Math.min(Math.max(x-tw/2,0),Math.max(b.width-tw,0));
+    var top=y-th-14; if(top<0) top=y+16;
+    tip.style.left=left+'px'; tip.style.top=top+'px';
+  }
+  function nearest(x,y){
+    var best=null;
+    data.s.forEach(function(s,si){
+      if(!s.p.length) return;
+      var lo=0,hi=s.p.length-1;
+      while(hi-lo>1){var m=(lo+hi)>>1; if(s.p[m][0]<x) lo=m; else hi=m;}
+      var i=Math.abs(s.p[lo][0]-x)<=Math.abs(s.p[hi][0]-x)?lo:hi;
+      var p=s.p[i], d=Math.abs(p[1]-y)+0.15*Math.abs(p[0]-x);
+      if(!best||d<best.d) best={si:si,i:i,d:d};
+    });
+    return best;
+  }
+  function onMove(e){
+    var t=e.touches?e.touches[0]:e, r=svg.getBoundingClientRect();
+    var n=nearest((t.clientX-r.left)/r.width*data.w,(t.clientY-r.top)/r.height*data.h);
+    if(n) show(n.si,n.i);
+  }
+  function hide(){box.classList.remove('active'); hl(-1);}
+  svg.addEventListener('mousemove',onMove);
+  svg.addEventListener('mouseleave',hide);
+  svg.addEventListener('touchstart',onMove,{passive:true});
+  svg.addEventListener('touchmove',onMove,{passive:true});
+  document.addEventListener('touchstart',function(e){ if(!box.contains(e.target)) hide(); },{passive:true});
+  box.querySelectorAll('.legend .lg').forEach(function(el){
+    el.addEventListener('mouseenter',function(){
+      var si=+el.dataset.i, s=data.s[si]; if(s && s.p.length) show(si,s.p.length-1);
+    });
+    el.addEventListener('mouseleave',hide);
+  });
+});
+})();
+</script>
+"""
 
 
 def bar_chart(labels, values, width=760, height=200, color=None, unit=""):
@@ -440,9 +545,27 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
     .empty{color:var(--muted);font-size:13px;padding:14px 0}
     .grid{display:grid;gap:26px}
     .legend{display:flex;flex-wrap:wrap;gap:6px 18px;font-size:13px;margin:2px 0 4px}
-    .legend .lg{display:inline-flex;align-items:center;gap:6px;color:var(--ink)}
+    .legend .lg{display:inline-flex;align-items:center;gap:6px;color:var(--ink);cursor:default}
     .legend .lg.me{font-weight:700}
     .legend i{display:inline-block;width:14px;height:3px;border-radius:2px}
+    .ichart{position:relative}
+    .ichart svg{touch-action:pan-y;cursor:crosshair}
+    .ichart path.series,.ichart circle.end{transition:opacity .15s,stroke-width .15s}
+    .ichart.active path.series,.ichart.active circle.end{opacity:.22}
+    .ichart.active path.series.hl,.ichart.active circle.end.hl{opacity:1}
+    .ichart.active path.series.hl{stroke-width:4.5px;
+      filter:drop-shadow(0 3px 4px rgba(0,0,0,.3))}
+    .ichart .guide{stroke:var(--muted);stroke-width:1;stroke-dasharray:3 3;visibility:hidden}
+    .ichart .hdot{stroke:#fff;stroke-width:2;visibility:hidden}
+    .ichart.active .guide,.ichart.active .hdot{visibility:visible}
+    .tip{position:absolute;left:0;top:0;pointer-events:none;z-index:5;opacity:0;
+      background:var(--ink);color:#fff;font-size:12px;line-height:1.5;padding:6px 10px;
+      border-radius:6px;white-space:nowrap;box-shadow:0 4px 12px rgba(0,0,0,.18);
+      transition:opacity .1s}
+    .ichart.active .tip{opacity:1}
+    .tip .tt{color:#cfcbd3}
+    .tip b{font-size:14px}
+    .tip .sw{display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:6px}
     @media(max-width:620px){.stats{gap:18px 26px}.stat .v{font-size:24px}
       th,td{padding:6px 5px;font-size:13px}}
     """
@@ -513,9 +636,10 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
     # 我的曲線
     if me and len(my_votes_series) >= 2:
         P.append("<h2>你的票數與名次</h2>")
-        P.append(line_chart(my_votes_series, label="我的票數", unit=""))
+        P.append(line_chart(my_votes_series, label="我的票數"))
         P.append("<p class='note'>票數</p>")
         P.append(line_chart(my_rank_series, color=PALETTE["accent2"], invert=True,
+                            valfmt=lambda v: f"第 {v} 名",
                             label="我的名次"))
         P.append("<p class='note'>名次（愈上面愈好）</p>")
 
@@ -564,7 +688,10 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
                 gaps.append((lab(n), color[n], g, False))
             gaps.append(("你（基準線）", PALETTE["accent"],
                          [(t, 0) for t, _ in hist[me]], True))
-            P.append(multi_line_chart(gaps, zero=True, label="與對手的差距"))
+            P.append(multi_line_chart(
+                gaps, zero=True, label="與對手的差距",
+                valfmt=lambda v: (f"領先你 {v} 票" if v > 0 else
+                                  f"落後你 {-v} 票" if v < 0 else "同票")))
             P.append("<p class='note'>對手比你多幾票。在黑線上方是領先你，下方是落後你；"
                      "線往黑線靠近代表差距在縮小。</p>")
 
@@ -625,14 +752,6 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
     last_of_day = {}
     for t in times:
         last_of_day[datetime.fromisoformat(t).date()] = t   # times 已排序，留下每天最後一筆
-    merged_close = False
-    if until and len(last_of_day) >= 2:
-        d_last = max(last_of_day)
-        t_last = datetime.fromisoformat(last_of_day[d_last])
-        if t_last.hour < 1 and (d_last - timedelta(days=1)) in last_of_day:
-            # 午夜截止，凌晨的最後一筆是前一天的結算，併回前一天
-            last_of_day[d_last - timedelta(days=1)] = last_of_day.pop(d_last)
-            merged_close = True
     if last_of_day:
         d0, d1 = min(last_of_day), max(last_of_day)
         cal = [d0 + timedelta(days=i) for i in range((d1 - d0).days + 1)]
@@ -674,9 +793,8 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
 
         first_t = datetime.fromisoformat(times[0]).strftime("%H:%M")
         notes = [f"{d0.month}/{d0.day} 從 {first_t} 開始記錄，只算那之後的增票；"
-                 + (f"最後一欄包含到 {now_dt.strftime('%m/%d %H:%M')} 的最終結算。"
-                    if merged_close else
-                    "最後一欄是截止前的最後一天。" if until else
+                 + (f"最後一欄是 {now_dt.strftime('%m/%d %H:%M')} 抓到的最終結算，"
+                    "也就是截止前最後幾分鐘的壓線票。" if until else
                     "最後一欄是今天到目前為止。")
                  + "顏色愈深代表當天票數愈多。"]
         if gap:
@@ -739,7 +857,7 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
         P.append("<p class='note'>各時段平均增票（0–23 時）。"
                  "看得出大家習慣什麼時候投票，提醒自己的人也挑那之前。</p>")
 
-    P.append("</div></body></html>")
+    P.append("</div>" + CHART_JS + "</body></html>")
 
     path = out if os.path.isabs(out) else os.path.join(HERE, out)
     d = os.path.dirname(path)
