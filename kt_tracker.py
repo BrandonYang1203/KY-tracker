@@ -643,7 +643,7 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
                             label="我的名次"))
         P.append("<p class='note'>名次（愈上面愈好）</p>")
 
-    # 近身戰：你與前後名
+    # 前十保衛戰：你與前後名
     if me and me in cur:
         rk = cur_rank[me]
         if rivals:
@@ -673,7 +673,7 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
                 who = "你" if n == me else html.escape(cur[n][0])
                 return f"第{cur_rank[n]}名 {who} #{n}（{cur[n][1]}）"
 
-            P.append(f"<h2>近身戰：{mode}</h2>")
+            P.append(f"<h2>前十保衛戰：{mode}</h2>")
             P.append(multi_line_chart(
                 [(lab(n), color[n], hist[n], n == me) for n in ordered],
                 label="與對手的票數"))
@@ -1051,7 +1051,7 @@ def main():
         p.add_argument("--until", default="",
                        help="報表只看到這個時間為止，如 \"2026-10-01 01:00\"")
         p.add_argument("--window", type=int, default=48,
-                       help="近身戰圖表要看最近幾小時，預設 48")
+                       help="前十保衛戰圖表要看最近幾小時，預設 48")
 
     p = sub.add_parser("snap", help="抓一次快照")
     common(p)
