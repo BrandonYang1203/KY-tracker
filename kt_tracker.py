@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 
-
 用法：
     python3 kt_tracker.py snap                 # 抓一次快照存進 votes.db
     python3 kt_tracker.py report --me 079      # 產生 report.html
@@ -318,9 +317,12 @@ def fmt_gain(g):
     return f'<span class="gain">+{g}</span>' if g > 0 else '<span class="flat">0</span>'
 
 
-def build_report(me=None, target_rank=10, out="report.html", rivals=None, window=48):
+def build_report(me=None, target_rank=10, out="report.html", rivals=None, window=48,
+                 until=None):
     conn = db()
     times = all_times(conn)
+    if until:
+        times = [t for t in times if datetime.fromisoformat(t) <= until]
     if not times:
         print("資料庫還是空的，先跑一次 snap。")
         return
@@ -450,7 +452,8 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
     P.append("<meta name='viewport' content='width=device-width,initial-scale=1'>")
     P.append("<title>票數追蹤</title><style>" + css + "</style></head><body><div class='wrap'>")
     P.append("<h1>台灣感性攝影展 · 票數追蹤</h1>")
-    P.append(f"<p class='stamp'>資料時間 {now_dt.strftime('%Y-%m-%d %H:%M')}"
+    frozen = "（活動已結束，資料定格）" if until else ""
+    P.append(f"<p class='stamp'>資料時間 {now_dt.strftime('%Y-%m-%d %H:%M')}{frozen}"
              f"　·　{len(cur)} 件作品　·　已累積 {len(times)} 次快照</p>")
 
     # 我的狀態
@@ -622,6 +625,14 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
     last_of_day = {}
     for t in times:
         last_of_day[datetime.fromisoformat(t).date()] = t   # times 已排序，留下每天最後一筆
+    merged_close = False
+    if until and len(last_of_day) >= 2:
+        d_last = max(last_of_day)
+        t_last = datetime.fromisoformat(last_of_day[d_last])
+        if t_last.hour < 1 and (d_last - timedelta(days=1)) in last_of_day:
+            # 午夜截止，凌晨的最後一筆是前一天的結算，併回前一天
+            last_of_day[d_last - timedelta(days=1)] = last_of_day.pop(d_last)
+            merged_close = True
     if last_of_day:
         d0, d1 = min(last_of_day), max(last_of_day)
         cal = [d0 + timedelta(days=i) for i in range((d1 - d0).days + 1)]
@@ -663,7 +674,11 @@ def build_report(me=None, target_rank=10, out="report.html", rivals=None, window
 
         first_t = datetime.fromisoformat(times[0]).strftime("%H:%M")
         notes = [f"{d0.month}/{d0.day} 從 {first_t} 開始記錄，只算那之後的增票；"
-                 f"最後一欄是今天到目前為止。顏色愈深代表當天票數愈多。"]
+                 + (f"最後一欄包含到 {now_dt.strftime('%m/%d %H:%M')} 的最終結算。"
+                    if merged_close else
+                    "最後一欄是截止前的最後一天。" if until else
+                    "最後一欄是今天到目前為止。")
+                 + "顏色愈深代表當天票數愈多。"]
         if gap:
             notes.append("標「—」的日子沒有任何快照，那幾天的票會算進下一個有資料的日子。")
         P.append("<p class='note'>" + "<br>".join(notes) + "</p>")
@@ -771,6 +786,13 @@ def cmd_snap(args):
     return 0
 
 
+def parse_until(text):
+    if not text or not text.strip():
+        return None
+    d = datetime.fromisoformat(text.strip().replace("/", "-"))
+    return d if d.tzinfo else d.replace(tzinfo=TZ)
+
+
 def parse_rivals(text):
     out = []
     for part in (text or "").replace("，", ",").split(","):
@@ -782,7 +804,8 @@ def parse_rivals(text):
 
 def cmd_report(args):
     build_report(me=args.me, target_rank=args.target, out=args.out,
-                     rivals=parse_rivals(args.rivals), window=args.window)
+                     rivals=parse_rivals(args.rivals), window=args.window,
+                     until=parse_until(args.until))
     return 0
 
 
@@ -792,7 +815,8 @@ def cmd_loop(args):
         try:
             cmd_snap(args)
             build_report(me=args.me, target_rank=args.target, out=args.out,
-                     rivals=parse_rivals(args.rivals), window=args.window)
+                     rivals=parse_rivals(args.rivals), window=args.window,
+                     until=parse_until(args.until))
         except KeyboardInterrupt:
             print("\n停止。")
             return 0
@@ -906,6 +930,8 @@ def main():
         p.add_argument("--out", default="report.html")
         p.add_argument("--rivals", default="",
                        help="指定對手編號，逗號分隔如 009,011；留空則自動取前後名")
+        p.add_argument("--until", default="",
+                       help="報表只看到這個時間為止，如 \"2026-10-01 01:00\"")
         p.add_argument("--window", type=int, default=48,
                        help="近身戰圖表要看最近幾小時，預設 48")
 
