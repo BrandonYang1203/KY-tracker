@@ -35,7 +35,7 @@ jobs:
       #   run: python kt_tracker.py emit --dir data
 
       - name: 產生定格報表
-        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --rivals "${{ vars.RIVALS }}" --until "2026-10-01 01:00" --window 10 --out docs/index.html
+        run: python kt_tracker.py report --me "${{ vars.MY_ENTRY }}" --target "${{ vars.TARGET_RANK || 10 }}" --rivals "${{ vars.RIVALS }}" --until "2026-10-01 01:00" --window 7 --out docs/index.html
 
       - name: 存回 repo
         run: |
